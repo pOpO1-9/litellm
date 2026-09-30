@@ -714,6 +714,7 @@ try:
 except ImportError:
     build_billing_metrics_recorder = None
     shutdown_billing_metrics_recorder = None
+from litellm.proxy import tracing_endpoints
 from litellm.proxy.middleware.admission_control_middleware import (
     AdmissionControlMiddleware,
     admission_control_state,
@@ -845,6 +846,7 @@ from litellm.secret_managers.main import (
     secret_manager_would_be_consulted,
     str_to_bool,
 )
+from litellm.tracing import TraceReceiver
 from litellm.types.integrations.slack_alerting import AlertType, SlackAlertingArgs
 from litellm.types.llms.anthropic import (
     AnthropicMessagesRequest,
@@ -1521,6 +1523,9 @@ async def proxy_startup_event(app: FastAPI) -> AsyncGenerator[None, None]:
                 _tagged.strategy._state_loaded = True
     asyncio.create_task(_adaptive_router_flusher_loop())
 
+    ## [Optional] Initialize agent tracing
+    asyncio.create_task(ProxyStartupEvent.init_tracing(general_settings))
+
     ## [Optional] Initialize dd tracer
     ProxyStartupEvent._init_dd_tracer()
 
@@ -1548,6 +1553,11 @@ async def proxy_startup_event(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         if not model_info_scheduler.running:
             model_info_scheduler.start()
+
+    if scheduler is not None and prisma_client is not None:
+        from litellm.proxy.management_endpoints.roi_calculator_endpoints import register_scheduled_sync
+
+        register_scheduled_sync(scheduler)
 
     # End of startup event
     yield
@@ -11307,6 +11317,28 @@ class ProxyStartupEvent:
             return connected_client
 
     @classmethod
+    async def init_tracing(cls, general_settings: dict) -> None:
+        """
+        Enable agent tracing (`POST/GET /v1/traces`) when configured:
+
+            general_settings:
+              tracing:
+                store: clickhouse       # CLICKHOUSE_URL / _USER / _PASSWORD / _DATABASE
+        """
+        settings: Final = general_settings.get("tracing")
+        if not isinstance(settings, dict) or settings.get("store") != "clickhouse":
+            return
+        try:
+            tracing: Final = TraceReceiver.from_env()
+            await tracing.start()
+        except (KeyError, OSError, RuntimeError, ValueError) as error:
+            tracing_endpoints.receiver = None
+            verbose_proxy_logger.warning("Agent tracing unavailable: %s", error)
+            return
+        tracing_endpoints.receiver = tracing
+        verbose_proxy_logger.info("Agent tracing enabled (store=clickhouse)")
+
+    @classmethod
     def _init_dd_tracer(cls):
         """
         Initialize dd tracer - if `USE_DDTRACE=true` in .env
@@ -17504,13 +17536,17 @@ def _serve_custom_ui_logo(candidate: str) -> Response | None:
 
 
 @app.get("/get_image", include_in_schema=False)
-async def get_image(theme: Literal["light", "dark"] | None = None):
+async def get_image(
+    theme: Literal["light", "dark"] | None = None,
+    variant: Literal["full", "monogram"] = "full",
+):
     """Get logo to show on admin UI"""
 
     # get current_dir
     current_dir: Final = os.path.dirname(os.path.abspath(__file__))
-    bundled_light_logo: Final = os.path.join(current_dir, "logo.jpg")
-    bundled_dark_logo: Final = os.path.join(current_dir, "logo_dark.png")
+    bundled_logo_stem: Final = "logo_monogram" if variant == "monogram" else "logo"
+    bundled_light_logo: Final = os.path.join(current_dir, f"{bundled_logo_stem}.png")
+    bundled_dark_logo: Final = os.path.join(current_dir, f"{bundled_logo_stem}_dark.png")
     default_site_logo: Final = (
         bundled_dark_logo if theme == "dark" and os.path.isfile(bundled_dark_logo) else bundled_light_logo
     )
@@ -17571,7 +17607,7 @@ async def get_image(theme: Literal["light", "dark"] | None = None):
     if safe_logo is not None:
         safe_logo_path, media_type = safe_logo
         return FileResponse(safe_logo_path, media_type=media_type)
-    return FileResponse(bundled_light_logo, media_type="image/jpeg")
+    return FileResponse(bundled_light_logo, media_type="image/png")
 
 
 @app.get("/get_favicon", include_in_schema=False)
@@ -19845,6 +19881,7 @@ app.include_router(rag_router)
 app.include_router(video_router)
 app.include_router(container_router)
 app.include_router(search_router)
+app.include_router(tracing_endpoints.router)
 app.include_router(image_router)
 app.include_router(fine_tuning_router)
 app.include_router(credential_router)
