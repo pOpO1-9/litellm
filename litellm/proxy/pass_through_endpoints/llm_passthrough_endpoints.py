@@ -81,7 +81,11 @@ from litellm.proxy.common_utils.resource_ownership import is_proxy_admin
 from litellm.proxy.common_utils.sse_keepalive import (
     wrap_passthrough_sse_bytes_with_keepalive_pings,
 )
-from litellm.proxy.pass_through_endpoints.common_utils import get_litellm_virtual_key
+from litellm.proxy.pass_through_endpoints.common_utils import (
+    get_litellm_virtual_key,
+    pass_through_caller_key_header,
+    served_pass_through_endpoints,
+)
 from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     HttpPassThroughEndpointHelpers,
     create_pass_through_route,
@@ -2460,21 +2464,15 @@ _MAPPED_ROUTE_CALLER_KEY_HEADER: Final = "litellm_user_api_key"
 
 def _operator_configured_caller_key_header_names() -> tuple[str, ...]:
     """Operator-configured header names ``user_api_key_auth`` reads the caller's key from."""
-    from litellm.proxy.proxy_server import general_settings
+    from litellm.proxy.proxy_server import config_passthrough_endpoints, general_settings
 
     custom_key_header: Final = general_settings.get("litellm_key_header_name")
     override: Final = (custom_key_header.lower(),) if isinstance(custom_key_header, str) else ()
-    pass_through_endpoints: Final = general_settings.get("pass_through_endpoints")
-    endpoints: Final = pass_through_endpoints if isinstance(pass_through_endpoints, list) else ()
-    pass_through: Final = tuple(
-        dict.fromkeys(
-            headers["litellm_user_api_key"].lower()
-            for endpoint in endpoints
-            if isinstance(endpoint, dict)
-            for headers in (endpoint.get("headers"),)
-            if isinstance(headers, dict) and isinstance(headers.get("litellm_user_api_key"), str)
-        )
+    endpoints: Final = served_pass_through_endpoints(
+        general_settings.get("pass_through_endpoints"), config_passthrough_endpoints
     )
+    header_names: Final = (pass_through_caller_key_header(endpoint) for endpoint in endpoints)
+    pass_through: Final = tuple(dict.fromkeys(name.lower() for name in header_names if name is not None))
     return override + pass_through
 
 

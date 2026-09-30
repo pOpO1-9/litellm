@@ -11,7 +11,7 @@ import asyncio
 import fnmatch
 import re
 import secrets
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from typing import Any, Final, NamedTuple, Protocol, Union, cast
 
@@ -128,6 +128,10 @@ from litellm.proxy.common_utils.user_api_key_cache import (
 from litellm.proxy.db.db_lookup_gate import bounded_db_lookup
 from litellm.proxy.db.exception_handler import PrismaDBExceptionHandler
 from litellm.proxy.litellm_pre_call_utils import LiteLLMProxyRequestSetup
+from litellm.proxy.pass_through_endpoints.common_utils import (
+    pass_through_caller_key_header,
+    served_pass_through_endpoints,
+)
 from litellm.proxy.spend_tracking.carried_budget_state import carry_team_and_user_budget_state
 from litellm.proxy.spend_tracking.spend_counter_batch import (
     bind_admission_counter_keys,
@@ -805,7 +809,7 @@ def get_api_key(
     anthropic_api_key_header: str | None,
     google_ai_studio_api_key_header: str | None,
     azure_apim_header: str | None,
-    pass_through_endpoints: list[dict] | None,
+    pass_through_endpoints: Sequence[Mapping[str, object]] | None,
     route: str,
     request: Request,
 ) -> tuple[str, str | None]:
@@ -848,20 +852,17 @@ def get_api_key(
         api_key = google_auth_key
     elif pass_through_endpoints is not None:
         for endpoint in pass_through_endpoints:
-            if endpoint.get("path", "") == route:
-                headers: dict | None = endpoint.get("headers", None)
-                if headers is not None:
-                    header_key: str = headers.get("litellm_user_api_key", "")
-                    if request.headers.get(header_key) is not None:
-                        api_key = request.headers.get(header_key) or ""
-                        passed_in_key = api_key
+            header_key = pass_through_caller_key_header(endpoint) if endpoint.get("path", "") == route else None
+            if header_key is not None and request.headers.get(header_key) is not None:
+                api_key = request.headers.get(header_key) or ""
+                passed_in_key = api_key
     return api_key, passed_in_key
 
 
 async def check_api_key_for_custom_headers_or_pass_through_endpoints(
     request: Request,
     route: str,
-    pass_through_endpoints: list[dict] | None,
+    pass_through_endpoints: Sequence[Mapping[str, object]] | None,
     api_key: str,
 ) -> UserAPIKeyAuth | str:
     is_mapped_pass_through_route: bool = False
@@ -876,7 +877,7 @@ async def check_api_key_for_custom_headers_or_pass_through_endpoints(
             api_key = request.headers.get("litellm_user_api_key") or ""
     if pass_through_endpoints is not None:
         for endpoint in pass_through_endpoints:
-            if isinstance(endpoint, dict) and endpoint.get("path", "") == route:
+            if endpoint.get("path", "") == route:
                 ## IF AUTH DISABLED
                 # Default to True: a config dict with no ``auth`` key
                 # otherwise produced an unauthenticated forwarder. The
@@ -897,11 +898,13 @@ async def check_api_key_for_custom_headers_or_pass_through_endpoints(
                     decoded_str = decoded_bytes.decode("utf-8")
                     api_key = decoded_str.split(":")[0]
                 else:
-                    headers = endpoint.get("headers", None)
-                    if headers is not None:
-                        header_key = headers.get("litellm_user_api_key", "")
-                        if isinstance(request.headers, dict) and request.headers.get(key=header_key) is not None:
-                            api_key = request.headers.get(key=header_key)
+                    header_key = pass_through_caller_key_header(endpoint)
+                    if (
+                        header_key is not None
+                        and isinstance(request.headers, dict)
+                        and request.headers.get(key=header_key) is not None
+                    ):
+                        api_key = request.headers.get(key=header_key)
     return api_key
 
 
@@ -1483,6 +1486,7 @@ async def _user_api_key_auth_builder(
     custom_litellm_key_header: str | None = None,
 ) -> UserAPIKeyAuth:
     from litellm.proxy.proxy_server import (
+        config_passthrough_endpoints,
         general_settings,
         jwt_handler,
         litellm_proxy_admin_name,
@@ -1517,7 +1521,9 @@ async def _user_api_key_auth_builder(
                 request=request,
                 route=route,
             )
-        pass_through_endpoints: Final[list[dict] | None] = general_settings.get("pass_through_endpoints", None)
+        pass_through_endpoints: Final = served_pass_through_endpoints(
+            general_settings.get("pass_through_endpoints"), config_passthrough_endpoints
+        )
         ## CHECK IF X-LITELM-API-KEY IS PASSED IN - supercedes Authorization header
         api_key, passed_in_key = get_api_key(
             custom_litellm_key_header=custom_litellm_key_header,
@@ -2736,6 +2742,7 @@ async def _run_centralized_common_checks(
       (``_is_api_route_allowed``, ``organization_role_based_access_check``).
     """
     from litellm.proxy.proxy_server import (
+        config_passthrough_endpoints,
         general_settings,
         litellm_proxy_admin_name,
         llm_router,
@@ -2760,11 +2767,12 @@ async def _run_centralized_common_checks(
     # common_checks on the empty token would reject the request as
     # admin-only. The "auth" flag on the endpoint config is the
     # contract; honor it.
-    pass_through_endpoints: Final = general_settings.get("pass_through_endpoints", None)
-    if pass_through_endpoints is not None:
-        for endpoint in pass_through_endpoints:
-            if isinstance(endpoint, dict) and endpoint.get("path", "") == route and endpoint.get("auth") is not True:
-                return
+    pass_through_endpoints: Final = served_pass_through_endpoints(
+        general_settings.get("pass_through_endpoints"), config_passthrough_endpoints
+    )
+    for endpoint in pass_through_endpoints:
+        if endpoint.get("path", "") == route and endpoint.get("auth") is not True:
+            return
 
     # No-auth dev mode: master_key unset AND no JWT/OAuth2 auth
     # configured. The builder returns an INTERNAL_USER token for any

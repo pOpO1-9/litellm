@@ -6730,13 +6730,6 @@ class ProxyConfig:
             if enterprise_proxy_config is not None:
                 await enterprise_proxy_config.load_enterprise_config(general_settings)
 
-            ## pass through endpoints
-            if general_settings.get("pass_through_endpoints", None) is not None:
-                await initialize_pass_through_endpoints(
-                    pass_through_endpoints=general_settings["pass_through_endpoints"],
-                    config_file_path=config_file_path,
-                )
-
             ## ADMIN UI ACCESS ##
             ui_access_mode = general_settings.get("ui_access_mode", "all")  # can be either ["admin_only" or "all"]
             ### ALLOWED IP ###
@@ -6803,6 +6796,9 @@ class ProxyConfig:
             if "litellm_license" in general_settings:
                 _license_check.license_str = general_settings["litellm_license"]
                 premium_user = _license_check.is_premium()
+
+        if config_passthrough_endpoints is not None:
+            await initialize_pass_through_endpoints(pass_through_endpoints=(), config_file_path=config_file_path)
 
         router_params: Final[dict] = {
             "cache_responses": litellm.cache is not None,  # cache if user passed in cache values

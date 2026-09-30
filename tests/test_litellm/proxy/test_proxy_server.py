@@ -8113,13 +8113,9 @@ async def test_update_general_settings_keeps_yaml_pass_through_endpoints_next_to
     [(None, None), (["POST"], ["GET"])],
     ids=["all-methods", "disjoint-methods"],
 )
-async def test_update_general_settings_db_pass_through_endpoint_cannot_override_a_yaml_declared_path(
+async def test_update_general_settings_db_pass_through_endpoint_governs_a_yaml_declared_path(
     db_methods: list[str] | None, yaml_methods: list[str] | None
 ):
-    """``pass_through_endpoints`` is config-owned once the file declares it, so a stored
-    ``auth: true`` entry on a path the YAML already declares ``auth: false`` no longer
-    locks that path down. Changing it means editing the config file. A path the YAML
-    does not declare is still governed by the stored row, which the sibling test covers."""
     from litellm.proxy.proxy_server import ProxyConfig
 
     yaml_endpoint: Final = {
@@ -8157,8 +8153,9 @@ async def test_update_general_settings_db_pass_through_endpoint_cannot_override_
     with settings, yaml_endpoints, initialize, master_key:
         await ProxyConfig()._update_general_settings(db_general_settings={"pass_through_endpoints": [db_endpoint]})
 
-        still_open: Final = await user_api_key_auth(request=request, api_key=None)
-        assert still_open.api_key is None
+        with pytest.raises(ProxyException) as locked_by_the_stored_row:
+            await user_api_key_auth(request=request, api_key=None)
+        assert locked_by_the_stored_row.value.code == "401"
 
 
 @pytest.fixture
@@ -8217,10 +8214,7 @@ async def test_deleting_the_stored_pass_through_row_takes_the_route_out_of_servi
 
 @pytest.mark.asyncio
 @pytest.mark.usefixtures("app_routes_restored")
-async def test_a_stored_pass_through_row_never_disturbs_the_config_declared_routes():
-    """``pass_through_endpoints`` is config-owned once the file declares it, so writing and then
-    deleting a stored row resolves to the same list both times and the config file's routes keep
-    serving untouched. The stored entry never gets a route of its own."""
+async def test_a_stored_pass_through_row_serves_beside_the_config_declared_routes():
     from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
         InitPassThroughEndpointHelpers,
         _registered_pass_through_routes,
@@ -8230,7 +8224,7 @@ async def test_a_stored_pass_through_row_never_disturbs_the_config_declared_rout
 
     marker: Final = uuid.uuid4().hex[:8]
     config_path: Final = f"/v1/kept-{marker}"
-    db_path: Final = f"/v1/ignored-{marker}"
+    db_path: Final = f"/v1/stored-{marker}"
     config_endpoint: Final = {"id": f"cfg-{marker}", "path": config_path, "target": "https://example.com/post"}
     db_endpoint: Final = {"id": f"db-{marker}", "path": db_path, "target": "https://example.com/post"}
     prior_routes: Final = list(app.routes)
@@ -8256,7 +8250,7 @@ async def test_a_stored_pass_through_row_never_disturbs_the_config_declared_rout
 
             pc = ProxyConfig()
             await pc._update_general_settings(db_general_settings={"pass_through_endpoints": [db_endpoint]})
-            assert live_paths() == {config_path}
+            assert live_paths() == {config_path, db_path}
 
             await pc._update_general_settings(db_general_settings={})
 

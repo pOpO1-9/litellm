@@ -118,6 +118,7 @@ from litellm.types.passthrough_endpoints.pass_through_endpoints import (
 )
 from litellm.types.utils import TRUSTED_CALLBACK_VARS_FIELD, Usage
 
+from .common_utils import merge_db_and_config_pass_through_endpoints
 from .llm_provider_handlers.tinyfish_passthrough_logging_handler import (
     is_tinyfish_agent_url,
 )
@@ -3227,11 +3228,11 @@ class InitPassThroughEndpointHelpers:
 
 
 def _get_combined_pass_through_endpoints(
-    pass_through_endpoints: list[dict] | list[PassThroughGenericEndpoint],
-    config_pass_through_endpoints: list[dict],
-):
+    pass_through_endpoints: Sequence[dict[str, object] | PassThroughGenericEndpoint],
+    config_pass_through_endpoints: Sequence[dict[str, object]],
+) -> tuple[dict[str, object] | PassThroughGenericEndpoint, ...]:
     """Get combined pass-through endpoints from db + config"""
-    return pass_through_endpoints + config_pass_through_endpoints
+    return merge_db_and_config_pass_through_endpoints(pass_through_endpoints, config_pass_through_endpoints)
 
 
 async def _register_pass_through_endpoint(
@@ -3332,7 +3333,7 @@ async def _register_pass_through_endpoint(
 
 
 async def initialize_pass_through_endpoints(
-    pass_through_endpoints: list[dict] | list[PassThroughGenericEndpoint],
+    pass_through_endpoints: Sequence[dict[str, object] | PassThroughGenericEndpoint],
     config_file_path: str | None = None,
 ):
     """
@@ -3362,7 +3363,7 @@ async def initialize_pass_through_endpoints(
     )
 
     ## get combined pass-through endpoints from db + config
-    combined_pass_through_endpoints: list[dict | PassThroughGenericEndpoint]
+    combined_pass_through_endpoints: Sequence[dict[str, object] | PassThroughGenericEndpoint]
 
     if config_passthrough_endpoints is not None:
         combined_pass_through_endpoints = _get_combined_pass_through_endpoints(
