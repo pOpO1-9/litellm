@@ -7,6 +7,7 @@ import { formatNumberWithCommas, getSpendString } from "@/utils/dataUtils";
 interface SpendBudgetCellProps {
   spend: number | null | undefined;
   maxBudget: number | null | undefined;
+  teamMemberGate?: InheritedBudgetGate | null;
   inheritedGates?: readonly InheritedBudgetGate[];
   spendDecimals?: number;
   budgetDecimals?: number;
@@ -21,24 +22,29 @@ const meterTone = (pct: number): "default" | "warning" | "over" => {
 export function SpendBudgetCell({
   spend,
   maxBudget,
+  teamMemberGate = null,
   inheritedGates = [],
   spendDecimals = 4,
   budgetDecimals = 0,
 }: SpendBudgetCellProps) {
   const spendValue = typeof spend === "number" && !Number.isNaN(spend) ? spend : 0;
-  const budget = maxBudget ?? null;
+  const ownBudget = maxBudget ?? null;
+  const budget = ownBudget ?? teamMemberGate?.maxBudget ?? null;
   const hasBudget = typeof budget === "number" && budget > 0;
   const pct = hasBudget ? (spendValue / budget) * 100 : 0;
 
   const spendText = spendValue > 0 ? getSpendString(spendValue, spendDecimals) : "$0.00";
-  const budgetLabel = budget === null ? "· Unlimited" : `of $${formatNumberWithCommas(budget, budgetDecimals)}`;
+  const budgetLabel =
+    budget === null
+      ? "· Unlimited"
+      : `of $${formatNumberWithCommas(budget, budgetDecimals)}${ownBudget === null ? " (team member)" : ""}`;
 
   return (
     <div className="flex min-w-[130px] flex-col gap-1">
       <div className="whitespace-nowrap text-xs">
         <span className="font-medium tabular-nums text-foreground">{spendText}</span>{" "}
         <span className="text-muted-foreground">{budgetLabel}</span>
-        {budget === null && <InheritedBudgetHint gates={inheritedGates} />}
+        {ownBudget === null && <InheritedBudgetHint gates={inheritedGates} />}
       </div>
       {hasBudget && (
         <Meter
